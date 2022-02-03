@@ -1,0 +1,11 @@
+name: Publish Document
+title:
+username:
+account: rpubs
+server: rpubs.com
+hostUrl: rpubs.com
+appId: https://api.rpubs.com/api/v1/document/861784/7c6b6b8cdd884a1ebe52020f2da01f53
+bundleId: https://api.rpubs.com/api/v1/document/861784/7c6b6b8cdd884a1ebe52020f2da01f53
+url: http://rpubs.com/cabruce/861784/edit
+when: 1643899985.12323
+lastSyncTime: 1643899985.12324

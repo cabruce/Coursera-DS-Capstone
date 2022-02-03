@@ -1,0 +1,304 @@
+---
+title: "Milestone Report"
+author: "cabruce"
+date: "11/26/2015"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Exploration
+
+For the purpose of creating a predictive input model, we have been supplied with a dataset containing tweets, news bulletins, and blog data in 4 languages: English, German, Russian, and Finnish. For this project, the focus is on the English corpus.
+
+```{r, cache=TRUE, warning=FALSE}
+enNewsLines <- readLines("final/en_US/en_US.news.txt")
+enBlogLines <- readLines("final/en_US/en_US.blogs.txt")
+enTwitterLines <- readLines("final/en_US/en_US.twitter.txt")
+
+
+wordCount <- function(lns){
+   sum(sapply(gregexpr("\\S+", lns), length))
+ }
+ meanSentenceLength <- function(lns){
+   mean(sapply(gregexpr("\\S+", lns), length))
+ }
+ lineCount <- function(lns){
+   length(lns)
+ }
+ tRow <- c(lineCount(enTwitterLines), wordCount(enTwitterLines), meanSentenceLength(enTwitterLines))
+ bRow <- c(lineCount(enBlogLines), wordCount(enBlogLines), meanSentenceLength(enBlogLines))
+ nRow <- c(lineCount(enNewsLines), wordCount(enNewsLines), meanSentenceLength(enNewsLines))
+ infoEn <- rbind(tRow, bRow, nRow)
+ rownames(infoEn) <- c("twitter", "blog", "news")
+ colnames(infoEn) <- c("lines", "words", "mean.words.per.line")
+ infoEn
+```
+
+As we can see, each dataset has approximately 30 million words - a very large dataset to be working with.
+
+
+## Sampling
+
+To decrease the size of the datasets, we will take a 5% sample of the data. 
+
+```{r, cache=TRUE, warning=FALSE, results='hide'}
+source("utils.R")
+set.seed(12345)
+recreate <- FALSE
+sampleFactor <- 0.05
+info <- createAllSamples("final", sampleFactor, recreate)
+twitterENInfo <- sampleFile("final/en_US/en_US.twitter.txt")
+newsENInfo <- sampleFile("final/en_US/en_US.news.txt")
+blogsENInfo <- sampleFile("final/en_US/en_US.blogs.txt")
+```
+
+These info objects contain the sample data & some meta information for later purposes
+```{r}
+str(twitterENInfo)
+```
+
+## Pre-processing
+
+### 1. Tokenization
+To parse the words, a whitespace tokenizer will be used. To keep the tokenization independent of context, we will split each line into sentences. Then the datasets will be further pre-processed by removing all non-word characters, lowercase, and splitting on whitespace. 
+
+
+```{r, eval=FALSE}
+tokenize <- function(dataset){
+  dataset <- unlist(strsplit(dataset, "[\\.\\,!\\?\\:]+"))
+  dataset <- tolower(dataset)
+  dataset <- gsub("[^a-z\\s]", " ", dataset)
+  dataset <- gsub("\\s+", " ", dataset)
+  dataset <- trimws(dataset)
+  dataset <- strsplit(dataset, "\\s")
+  return(dataset)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide'}
+source("utils.R")
+```
+
+```{r, cache=TRUE}
+twitterSampleENTokenized <- tokenize(twitterENInfo$sample.data)
+newsSampleENTokenized <- tokenize(newsENInfo$sample.data)
+blogSampleENTokenized <- tokenize(blogsENInfo$sample.data)
+```
+
+### 2. Merging
+
+Since the data has now been pre-processed, it can be combined into a single dataset.
+
+```{r, cache=TRUE}
+sampleENTokenized <- c(twitterSampleENTokenized, newsSampleENTokenized, blogSampleENTokenized)
+```
+
+### 3. Filtering
+Any profanity is filtered out using a publicly kept profanity list from [https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words)
+
+```{r, eval=FALSE}
+profanityFilter <- function(termList, locale){
+  profanities <- readLines(paste0("en.txt"))
+  lapply(termList, setdiff, y=profanities)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide'}
+source("utils.R")
+```
+
+```{r, cache=TRUE}
+sampleENTokenized <- profanityFilter(sampleENTokenized, twitterENInfo$locale)
+```
+
+Stopwords (e.g. the, and) and other 1- or 2-letter words are commonly filtered out during NLP, but in this case it will alter the sentence syntax and could affect the predictions. For now, we will leave in these words.
+
+
+## Exploratory Data Analysis
+
+### 1. View data
+
+
+```{r}
+head(sampleENTokenized, 3)
+#Num lines
+length(sampleENTokenized)
+#Num terms
+sum(sapply(sampleENTokenized, length))
+```
+
+After sampling, we ended up with 4.8M terms divided over 717k sentences.
+
+### 2. Term frequencies
+
+
+```{r, eval=FALSE}
+frequencyTable <- function(termList){
+  term <- data.frame(unlist(termList))
+  grouped <- as.data.frame(table(term))
+  freq <- grouped[order(-grouped$Freq),]
+  rownames(freq) <- 1:nrow(freq)
+  
+  total <- sum(freq$Freq)
+  freq$CumFreq <- cumsum(freq$Freq)
+  freq$Coverage <- freq$CumFreq/total
+  
+  return(freq)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide'}
+ source("utils.R")
+```
+
+
+```{r, cache=TRUE}
+# sampleENTermFrequency <- frequencyTable(sampleENTokenized)
+# head(sampleENTermFrequency, 15)
+```
+
+### 3. Create n-grams
+Now we have term vectors and we are reasonably sure about the quality, we can now create n-grams using this function:
+
+```{r, eval=FALSE}
+createNgram <- function(vec, n=2){
+  l <- length(vec) 
+  if(l < n){
+    return(c())
+  }else if(l == n){
+    return(paste(vec, collapse = " "))
+  }else{
+    numNgrams <- l-n+1
+    mtrx <- matrix(nrow=numNgrams, ncol=n)
+    for(i in 1:n){
+      m <- l - n + i
+      mtrx[,i] <- vec[i:m]
+    }
+    ngrams <- apply(mtrx, 1, paste, collapse=" ")
+    return(ngrams)
+  }
+} 
+transformNGram <- function(termList, n=2){
+  lapply(termList, createNgram, n=n)
+}
+```
+
+
+
+### 4. Coverage overview
+
+We can also compare the coverage of the n-gram sets is compare to the entire corpus.
+
+```{r, eval=FALSE}
+coverageFactor <- function(freqTable, coverage){
+  pos <- nrow(freqTable[freqTable$Coverage < coverage,])
+  pos / nrow(freqTable) 
+}
+```
+
+```{r} 
+# coverageFactors <- c(0.1,0.5,0.9)
+# uniCov <- sapply(coverageFactors, coverageFactor, freqTable=sampleENTermFrequency)
+# biCov <- sapply(coverageFactors, coverageFactor, freqTable=sampleENBiGramsFrequency)
+# triCov <- sapply(coverageFactors, coverageFactor, freqTable=sampleENTriGramsFrequency)
+# infoCov <- rbind(uniCov, biCov, triCov)
+# rownames(infoCov) <- c("uni-gram", "bi-gram", "tri-gram")
+# colnames(infoCov) <- coverageFactors
+# infoCov
+```
+
+
+
+# Results
+
+We see that small parts of the data are responsible for the bulk of the corpus, therefore we predict we can use a smaller model and still make accurate predictions.
+
+
+### Next steps
+
+We want to ensure that 5% is the optimal sample and to check if the removal of stopwards and punctuation (which have not been removed to date) improves the prediction. 
+
+The ultimate goal is to build a predictive model using the identified tokens that will be used in an R shiny app. 
+
+
+# Appendix - Other Analysis & Plots
+To keep the RAM usage down for this report, plots and other high-CPU analyses have been moved to the appendix where they can be run separately.
+
+
+#### Term frequency plots
+
+```{r,fig.width=7, fig.height=6}
+# library(ggplot2)
+# tmp <- sampleENTermFrequency[1:50,]
+# tmp$termLength <-  nchar(as.character(tmp$term))
+# ggplot(tmp, aes(x=reorder(term,Freq), y=Freq, fill=termLength)) +
+#     geom_bar(stat="identity") +
+#     coord_flip() + 
+#     theme(panel.border = element_blank(), 
+#           panel.grid.major = element_blank(),
+#           panel.grid.minor = element_blank(), 
+#           panel.background = element_blank(),
+#           axis.title.y=element_blank(),
+#           axis.title.x=element_blank())
+```
+
+```{r,fig.width=7, fig.height=6}
+# library(ggplot2)
+# tmp <- filterFrequencyTable(sampleENTermFrequency, 0.005)
+# ggplot(tmp, aes(y=as.integer(rownames(tmp)), x=Coverage)) +
+#     geom_line() +
+#     coord_flip() + 
+#     labs(x="Coverage",y="Observations") +
+#     theme(panel.border = element_blank(), 
+#           panel.grid.major = element_blank(),
+#           panel.grid.minor = element_blank(), 
+#           panel.background = element_blank()
+#           )
+```
+
+
+#### Bi-grams 
+
+```{r, cache=TRUE} 
+# sampleENBiGrams <- transformNGram(sampleENTokenized, 2) 
+# sampleENBiGramsFrequency <- frequencyTable(sampleENBiGrams) 
+# head(sampleENBiGramsFrequency, 15) 
+``` 
+
+```{r,fig.width=7, fig.height=6, echo=FALSE} 
+# library(ggplot2) 
+# tmp <- filterFrequencyTable(sampleENBiGramsFrequency, 0.005) 
+# ggplot(tmp, aes(y=as.integer(rownames(tmp)), x=Coverage)) + 
+#     geom_line() + 
+#     coord_flip() +  
+#     labs(x="Coverage",y="Observations") + 
+#     theme(panel.border = element_blank(),  
+#           panel.grid.major = element_blank(), 
+#           panel.grid.minor = element_blank(),  
+#           panel.background = element_blank() 
+#           ) 
+``` 
+
+#### Tri-grams
+
+```{r, cache=TRUE} 
+# sampleENTriGrams <- transformNGram(sampleENTokenized, 3) 
+# sampleENTriGramsFrequency <- frequencyTable(sampleENTriGrams) 
+# head(sampleENTriGramsFrequency, 15) 
+``` 
+```{r,fig.width=7, fig.height=6, echo=FALSE} 
+# library(ggplot2) 
+# tmp <- filterFrequencyTable(sampleENTriGramsFrequency, 0.005) 
+# ggplot(tmp, aes(y=as.integer(rownames(tmp)), x=Coverage)) + 
+#     geom_line() + 
+#     coord_flip() +  
+#     labs(x="Coverage",y="Observations") + 
+#     theme(panel.border = element_blank(),  
+#           panel.grid.major = element_blank(), 
+#           panel.grid.minor = element_blank(),  
+#           panel.background = element_blank() 
+#           ) 
+``` 
